@@ -1,0 +1,140 @@
+name: Repository landscape
+
+on:
+  workflow_dispatch:
+    inputs:
+      mode:
+        description: "Import a baseline candidate, or refresh against the committed initial baseline"
+        type: choice
+        required: true
+        options:
+          - import
+          - refresh
+
+permissions:
+  contents: read
+
+concurrency:
+  group: landscape-${{ github.repository }}
+  cancel-in-progress: false
+
+jobs:
+  scan:
+    runs-on: ubuntu-24.04
+    outputs:
+      publish_pages: ${{ steps.preflight.outputs.publish_pages }}
+    steps:
+      - uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4
+        with:
+          persist-credentials: false
+      - uses: actions/setup-node@49933ea5288caeca8642d1e84afbd3f7d6820020 # v4
+        with:
+          node-version: '22'
+      - uses: actions/setup-python@a26af69be951a213d495a4c3e4e4022e16d87065 # v5
+        with:
+          python-version: '3.11'
+      - name: Verify private team repository and approved selection
+        id: preflight
+        env:
+          GH_TOKEN: ${{ github.token }}
+          MODE: ${{ inputs.mode }}
+          DEFAULT_BRANCH: ${{ github.event.repository.default_branch }}
+        run: |
+          if [[ "$GITHUB_REF" != "refs/heads/$DEFAULT_BRANCH" ]]; then
+            echo "::error::Run the reviewed workflow from the default branch only."
+            exit 1
+          fi
+          if [[ "$(gh api "repos/$GITHUB_REPOSITORY" --jq '.private')" != "true" ]]; then
+            echo "::error::Create a PRIVATE team repository from this template before configuring or running imports."
+            exit 1
+          fi
+          node scripts/landscape.mjs preflight "$MODE" "$GITHUB_OUTPUT"
+      - name: Create short-lived read-only installation token for selected repositories
+        id: app-token
+        uses: actions/create-github-app-token@fee1f7d63c2ff003460e3d139729b119787bc349 # v2
+        with:
+          app-id: ${{ secrets.LANDSCAPE_APP_ID }}
+          private-key: ${{ secrets.LANDSCAPE_APP_PRIVATE_KEY }}
+          owner: ${{ steps.preflight.outputs.owner }}
+          repositories: ${{ steps.preflight.outputs.repositories }}
+          permission-contents: read
+      - name: Clone complete Git histories for all selected repositories
+        env:
+          LANDSCAPE_APP_TOKEN: ${{ steps.app-token.outputs.token }}
+        run: |
+          chmod +x scripts/git-askpass.sh
+          node scripts/landscape.mjs clone "$RUNNER_TEMP/landscape-heads.json"
+      - name: Install exact engine release
+        run: npm install --no-save --ignore-scripts --no-audit --no-fund --prefix "$RUNNER_TEMP/repo-landscape" '@devex-metrics/repo-landscape@0.1.0'
+      - name: Scan repositories
+        env:
+          GH_TOKEN: ${{ steps.app-token.outputs.token }}
+          MODE: ${{ inputs.mode }}
+        run: |
+          args=(scan --config ./landscape.config.json --output ./landscape.json --repos-dir "$RUNNER_TEMP/landscape-repos" --expected-heads "$RUNNER_TEMP/landscape-heads.json")
+          if [[ "$MODE" == "refresh" ]]; then
+            args+=(--baseline ./state/initial-baseline.json)
+          fi
+          "$RUNNER_TEMP/repo-landscape/node_modules/.bin/repo-landscape" "${args[@]}"
+      - name: Verify every selected repository and cloned HEAD
+        run: node scripts/landscape.mjs verify ./landscape.json "$RUNNER_TEMP/landscape-heads.json"
+      - name: Generate local report
+        run: |
+          "$RUNNER_TEMP/repo-landscape/node_modules/.bin/repo-landscape" report --input ./landscape.json --output ./landscape.html
+      - name: Upload team-owned results
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: landscape-results
+          path: |
+            landscape.json
+            landscape.html
+          if-no-files-found: error
+          retention-days: 7
+      - name: Prepare initial baseline candidate for human review
+        if: inputs.mode == 'import'
+        run: |
+          mkdir -p state
+          cp landscape.json state/initial-baseline.json
+      - name: Upload initial baseline candidate
+        if: inputs.mode == 'import'
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4
+        with:
+          name: initial-baseline-candidate
+          path: state/initial-baseline.json
+          if-no-files-found: error
+          retention-days: 7
+
+  publish:
+    if: needs.scan.outputs.publish_pages == 'true' && inputs.mode == 'refresh'
+    needs: scan
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      pages: write
+      id-token: write
+    environment:
+      name: github-pages
+      url: ${{ steps.deployment.outputs.page_url }}
+    steps:
+      - name: Verify team repository remains private
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          if [[ "$(gh api "repos/$GITHUB_REPOSITORY" --jq '.private')" != "true" ]]; then
+            echo "::error::Refusing to publish from a public team repository."
+            exit 1
+          fi
+      - uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4
+        with:
+          name: landscape-results
+          path: results
+      - name: Stage report for Pages
+        run: |
+          mkdir -p site
+          cp results/landscape.html site/index.html
+      - uses: actions/configure-pages@983d7736d9b0ae728b81ab479565c72886d7745b # v5
+      - uses: actions/upload-pages-artifact@56afc609e74202658d3ffba0e8f6dda462b719fa # v3
+        with:
+          path: site
+      - id: deployment
+        uses: actions/deploy-pages@d6db90164ac5ed86f2b6aed7e0febac5b3c0c03e # v4

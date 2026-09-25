@@ -1,0 +1,8 @@
+{
+  "schema_version": 1,
+  "repositories": [
+    "example-org/example-api",
+    "example-org/example-web"
+  ],
+  "stale_after_days": 90
+}
