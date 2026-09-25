@@ -73,10 +73,31 @@ export function cloneDestination(runnerTemp, fullName) {
 }
 
 export function validateSnapshot(snapshot, selected, expectedHeads) {
-  if (snapshot?.schema_version !== 1 || !Array.isArray(snapshot.repositories)) {
-    fail('Scanner output must be a v1 JSON snapshot with a repositories array.');
+  if (snapshot?.schema_version !== 1 || !Array.isArray(snapshot.repositories) || !Array.isArray(snapshot.edges)) {
+    fail('Scanner output must be a full v1 landscape with repositories and graph edges.');
+  }
+  if (
+    typeof snapshot.generated_at !== 'string' ||
+    !Number.isFinite(Date.parse(snapshot.generated_at)) ||
+    typeof snapshot.scanner_version !== 'string' ||
+    !snapshot.scanner_version ||
+    !snapshot.provenance ||
+    typeof snapshot.provenance !== 'object'
+  ) {
+    fail('Scanner output is missing v1 generation or provenance metadata.');
   }
   const expected = new Set(selected.map((name) => name.toLowerCase()));
+  const selectedNames = snapshot.selection?.selected_repositories;
+  if (
+    snapshot.selection?.mode !== 'explicit' ||
+    !Array.isArray(selectedNames) ||
+    selectedNames.some((name) => typeof name !== 'string') ||
+    selectedNames.length !== expected.size ||
+    new Set(selectedNames.map((name) => name.toLowerCase())).size !== expected.size ||
+    selectedNames.some((name) => !expected.has(name.toLowerCase()))
+  ) {
+    fail('Scanner selection does not match the approved explicit repository list.');
+  }
   const observed = new Set();
   for (const entry of snapshot.repositories) {
     const name = entry?.full_name;
@@ -86,8 +107,27 @@ export function validateSnapshot(snapshot, selected, expectedHeads) {
     if (typeof entry.head_sha !== 'string' || !shaPattern.test(entry.head_sha)) {
       fail(`Scanner output has no valid HEAD SHA for ${name}.`);
     }
-    if (!Array.isArray(entry.ai_files) || !entry.ai_summary || typeof entry.ai_summary.count !== 'number') {
+    if (
+      !Array.isArray(entry.ai_files) ||
+      !entry.ai_summary ||
+      !Number.isInteger(entry.ai_summary.count) ||
+      entry.ai_summary.count < 0 ||
+      !Number.isInteger(entry.ai_summary.stale_count) ||
+      !Number.isInteger(entry.ai_summary.unknown_count)
+    ) {
       fail(`Scanner output has incomplete v1 results for ${name}.`);
+    }
+    if (
+      !Number.isInteger(entry.metrics?.files) ||
+      entry.metrics.files < 0 ||
+      !Array.isArray(entry.languages) ||
+      !Number.isInteger(entry.git?.commit_count) ||
+      !Number.isInteger(entry.architecture?.adr_count) ||
+      !Array.isArray(entry.manifests) ||
+      !Array.isArray(entry.produces) ||
+      !Array.isArray(entry.consumes)
+    ) {
+      fail(`Scanner output has incomplete full-history landscape results for ${name}.`);
     }
     const clonedHead = expectedHeads?.get(name.toLowerCase());
     if (expectedHeads && clonedHead?.toLowerCase() !== entry.head_sha.toLowerCase()) {
@@ -101,19 +141,19 @@ export function validateSnapshot(snapshot, selected, expectedHeads) {
   return snapshot;
 }
 
-function loadSelection() {
-  const settings = validateSettings(readJson(join(root, 'template.settings.json')));
-  const selection = validateConfig(readJson(join(root, 'landscape.config.json')));
+function loadSelection(baseDir = root) {
+  const settings = validateSettings(readJson(join(baseDir, 'template.settings.json')));
+  const selection = validateConfig(readJson(join(baseDir, 'landscape.config.json')));
   if (!settings.enabled || !selection.repositories.length) {
     fail('Template is inactive. In your PRIVATE team repo, list reviewed owner/repo entries in landscape.config.json and set enabled: true in template.settings.json.');
   }
   return { settings, selection };
 }
 
-function preflight(mode, outputPath) {
+export function preflight(mode, outputPath, baseDir = root) {
   if (!['import', 'refresh'].includes(mode)) fail('Choose workflow mode import or refresh.');
-  const { settings, selection } = loadSelection();
-  const baseline = join(root, baselinePath);
+  const { settings, selection } = loadSelection(baseDir);
+  const baseline = join(baseDir, baselinePath);
   if (mode === 'import' && existsSync(baseline)) {
     fail('Initial baseline already exists. Use refresh; the baseline must never be overwritten.');
   }
@@ -122,7 +162,7 @@ function preflight(mode, outputPath) {
       fail('No initial baseline yet. Run import, review its artifact, then explicitly commit state/initial-baseline.json to your PRIVATE team repo.');
     }
     const tracked = spawnSync('git', ['ls-files', '--error-unmatch', '--', baselinePath], {
-      cwd: root, stdio: 'ignore',
+      cwd: baseDir, stdio: 'ignore',
     });
     if (tracked.error || tracked.status !== 0) {
       fail('Initial baseline must be explicitly committed in this team repository before refresh.');

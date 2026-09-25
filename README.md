@@ -2,6 +2,8 @@
 
 Create an independent **private** team repository from this public GitHub template to run [`@devex-metrics/repo-landscape`](https://github.com/devex-metrics/repo-landscape-cli). This template contains only synthetic examples and an inert workflow. Repository selections, credentials, snapshots, baselines, reports, and publication decisions belong exclusively to each team-created repository. Creating a repository from a template does **not** automatically update it when this template changes; the scanner and report behavior are versioned in the pinned npm package.
 
+The engine produces a full landscape of repository size, languages, Git history, ADR and dependency evidence, and AI-guidance freshness; its report is a self-contained HTML dashboard.
+
 The workflow requires the released `@devex-metrics/repo-landscape@0.1.0` package. **It is not published yet.** The engine's first release requires a manual npm bootstrap, followed by npm trusted publishing/OIDC setup; do not substitute an unpinned package, put an npm token in this template, or enable imports before the pinned release exists.
 
 ## Set up a team repository

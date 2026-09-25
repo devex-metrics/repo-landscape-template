@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { readFileSync } from 'node:fs';
+import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -8,6 +8,7 @@ import { fileURLToPath } from 'node:url';
 import {
   actionOutputs,
   cloneDestination,
+  preflight,
   validateConfig,
   validateSettings,
   validateSnapshot,
@@ -20,11 +21,26 @@ const example = JSON.parse(readFileSync(new URL('../config/landscape.example.jso
 function snapshot(repositories) {
   return {
     schema_version: 1,
+    generated_at: '2026-01-01T00:00:00Z',
+    scanner_version: '0.1.0',
+    provenance: { mode: 'local_clones' },
+    selection: {
+      mode: 'explicit',
+      selected_repositories: [...repositories],
+    },
+    edges: [],
     repositories: repositories.map((fullName, index) => ({
       full_name: fullName,
       head_sha: String(index + 1).repeat(40),
       ai_files: [],
-      ai_summary: { count: 0 },
+      ai_summary: { count: 0, stale_count: 0, unknown_count: 0 },
+      metrics: { files: 0 },
+      languages: [],
+      git: { commit_count: 1 },
+      architecture: { adr_count: 0 },
+      manifests: [],
+      produces: [],
+      consumes: [],
     })),
   };
 }
@@ -47,6 +63,23 @@ test('a workflow preflight of the unmodified template fails with setup instructi
   ], { encoding: 'utf8' });
   assert.equal(result.status, 1);
   assert.match(result.stderr, /Template is inactive.*PRIVATE team repo/);
+});
+
+test('private-team preflight gates import, refresh, and baseline replacement', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'landscape-template-test-'));
+  try {
+    writeFileSync(join(dir, 'landscape.config.json'), JSON.stringify(example));
+    writeFileSync(join(dir, 'template.settings.json'), JSON.stringify({ enabled: true, publish_pages: false }));
+    const output = join(dir, 'github-output');
+    preflight('import', output, dir);
+    assert.equal(readFileSync(output, 'utf8'), 'owner=example-org\nrepositories=example-api,example-web\npublish_pages=false\n');
+    assert.throws(() => preflight('refresh', output, dir), /No initial baseline/);
+    mkdirSync(join(dir, 'state'));
+    writeFileSync(join(dir, 'state/initial-baseline.json'), JSON.stringify(snapshot(example.repositories)));
+    assert.throws(() => preflight('import', output, dir), /must never be overwritten/);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 });
 
 test('selection requires an exact, unique list under a single installation owner', () => {
@@ -76,12 +109,30 @@ test('App token scope and clone paths derive only from the reviewed selection', 
 test('initial baselines require all selected repositories and complete v1 output', () => {
   const selected = ['example-org/example-api', 'example-org/example-web'];
   assert.equal(validateSnapshot(snapshot(selected), selected).repositories.length, 2);
-  assert.throws(() => validateSnapshot(snapshot([selected[0]]), selected), /resolved 1 of 2/);
-  assert.throws(() => validateSnapshot(snapshot([...selected, 'example-org/unreviewed']), selected), /extra or duplicate/);
-  assert.throws(() => validateSnapshot(snapshot([selected[0], selected[0]]), selected), /extra or duplicate/);
+  const partial = snapshot(selected);
+  partial.repositories.pop();
+  assert.throws(() => validateSnapshot(partial, selected), /resolved 1 of 2/);
+  const extra = snapshot(selected);
+  extra.repositories.push(snapshot(['example-org/unreviewed']).repositories[0]);
+  assert.throws(() => validateSnapshot(extra, selected), /extra or duplicate/);
+  const duplicate = snapshot(selected);
+  duplicate.repositories[1].full_name = selected[0];
+  assert.throws(() => validateSnapshot(duplicate, selected), /extra or duplicate/);
   const incomplete = snapshot(selected);
   delete incomplete.repositories[1].ai_summary;
   assert.throws(() => validateSnapshot(incomplete, selected), /incomplete v1/);
+  const incorrectSelection = snapshot(selected);
+  incorrectSelection.selection.selected_repositories[1] = 'example-org/unreviewed';
+  assert.throws(() => validateSnapshot(incorrectSelection, selected), /selection does not match/);
+  const noProvenance = snapshot(selected);
+  delete noProvenance.provenance;
+  assert.throws(() => validateSnapshot(noProvenance, selected), /provenance metadata/);
+  const aiOnly = snapshot(selected);
+  delete aiOnly.repositories[0].metrics;
+  assert.throws(() => validateSnapshot(aiOnly, selected), /full-history landscape/);
+  const noGraph = snapshot(selected);
+  delete noGraph.edges;
+  assert.throws(() => validateSnapshot(noGraph, selected), /full v1 landscape/);
 });
 
 test('scan HEADs must agree with every full-history clone', () => {
