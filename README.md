@@ -1,0 +1,32 @@
+# Repository landscape team template
+
+Create an independent **private** team repository from this public GitHub template to run [`@devex-metrics/repo-landscape`](https://github.com/devex-metrics/repo-landscape-cli). This template contains only synthetic examples and an inert workflow. Repository selections, credentials, snapshots, baselines, reports, and publication decisions belong exclusively to each team-created repository. Creating a repository from a template does **not** automatically update it when this template changes; the scanner and report behavior are versioned in the pinned npm package.
+
+The engine produces a full landscape of repository size, languages, Git history, ADR and dependency evidence, and AI-guidance freshness; its report is a self-contained HTML dashboard.
+
+The workflow requires the released `@devex-metrics/repo-landscape@0.1.0` package. **It is not published yet.** The engine's first release requires a manual npm bootstrap, followed by npm trusted publishing/OIDC setup; do not substitute an unpinned package, put an npm token in this template, or enable imports before the pinned release exists.
+
+## Set up a team repository
+
+1. Use **Use this template** and select **Private** for the new repository. Check its actual visibility before editing configuration or running Actions. Keep it private; a public team repository is rejected before an App token is created. Require reviewed, signed changes on its default branch, especially for config and baseline changes.
+2. Create/install a GitHub App on **only the repositories this team has approved**. Grant **Contents: read** (GitHub grants metadata read automatically), not write or organization-wide discovery rights. Store its App ID and PEM private key in this team's repository Actions secrets named `LANDSCAPE_APP_ID` and `LANDSCAPE_APP_PRIVATE_KEY`. Never put credentials in JSON, git remotes, a report, or an Actions log. The workflow further limits each short-lived installation token to the exact selected repositories and requests Contents: read.
+3. Review and edit `landscape.config.json`: set `repositories` to explicit `owner/repo` names, all under one installation owner, and adjust `stale_after_days` if needed. The file starts with an **empty** selection. `config/landscape.example.json` is synthetic reference only, not an input. This template deliberately rejects discovery; review any candidates and put their exact names in `repositories` instead of scanning an organization by default.
+4. After the package is published and your App has access to every selected repository, set `"enabled": true` in `template.settings.json`, commit the changes with review, and run **Repository landscape → Run workflow → import** from the default branch. Imports clone complete Git histories of the selected repositories into ephemeral runner storage, then scan them at checked HEADs. One unreadable or changed repository fails the entire run; no partial initial baseline is accepted.
+5. Download the **initial-baseline-candidate** artifact within 7 days. Review its selected repository names and results, place its `initial-baseline.json` at `state/initial-baseline.json` in the **private team repository**, and explicitly stage it with `git add -f state/initial-baseline.json`. Submit a reviewed, signed commit. The workflow does not commit generated data for you. `state/` is ignored to prevent accidental staging; only this reviewed file should be deliberately force-added. Protect the baseline from changes with branch rules and code review.
+6. Run **refresh** only after the baseline is committed. Refresh reads that initial baseline, never writes over it, and uploads `landscape.json` and `landscape.html` as private workflow artifacts with a 7-day retention period. To change the initial selection, start a separately reviewed baseline lifecycle in a new team repository; do not silently re-import over the original baseline.
+
+The workflow does not commit generated snapshots, reports, caches, or cloned repositories. Results exist in the team's Actions artifacts for 7 days, so arrange team-controlled private retention if longer history is required. `landscape.json`, `landscape.html`, `state/`, and local caches are gitignored. The initial baseline is intentionally committed only by the team as described above.
+
+## Optional GitHub Pages publication
+
+`"publish_pages": false` in `template.settings.json` is the default. **A Pages site can be publicly accessible even when the source repository is private.** Reports can expose repository names, paths, dependency evidence, and other internal information. Only set this to `true` after an explicit privacy review and confirmation of your organization's Pages visibility/access settings. Configure **Settings → Pages → Build and deployment → GitHub Actions**, and consider required reviewers on the `github-pages` environment. The publish job receives Pages write and OIDC permissions only when opted in and runs only for a refresh after the initial baseline has been reviewed and committed; it publishes the report HTML, not the JSON snapshot or baseline. Do not enable Pages for private or sensitive landscapes unless the resulting site is approved for its actual audience.
+
+## Maintain this template
+
+The template is intentionally thin: `scripts/landscape.mjs` checks the selected config, refuses partial or inconsistent scans, and uses GitHub App credentials to verify the full-history clones. The engine provides the versioned scanner/report. Change the exact npm version only in a reviewed PR after validating its command and JSON contract; do not make team-specific edits to this public source. Run the local, package-independent checks with:
+
+```sh
+node --test
+```
+
+The workflow provides Node 22 and Python 3.11 and invokes the pinned engine with `scan --config ./landscape.config.json --output ./landscape.json --repos-dir "$RUNNER_TEMP/landscape-repos" --expected-heads "$RUNNER_TEMP/landscape-heads.json"` (and `--baseline ./state/initial-baseline.json` for refresh) and `report --input ./landscape.json --output ./landscape.html`. Full-history clones live under `$RUNNER_TEMP/landscape-repos/<owner>/<repo>` on the runner. The engine validates each clone's origin, history and recorded HEAD before analyzing it.
