@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdtempSync, mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import test from 'node:test';
@@ -150,7 +150,7 @@ test('workflow gates sensitive operations and never automatically commits genera
   const workflow = readFileSync(new URL('../.github/workflows/landscape.yml', import.meta.url), 'utf8');
   const script = readFileSync(new URL('../scripts/landscape.mjs', import.meta.url), 'utf8');
   const ignore = readFileSync(new URL('../.gitignore', import.meta.url), 'utf8');
-  const instructions = readFileSync(new URL('../.github/copilot-instructions.md', import.meta.url), 'utf8');
+  const instructions = readFileSync(new URL('../AGENTS.md', import.meta.url), 'utf8');
 
   assert.match(workflow, /workflow_dispatch:/);
   assert.match(workflow, /- import\s+- refresh/);
@@ -166,5 +166,7 @@ test('workflow gates sensitive operations and never automatically commits genera
   assert.doesNotMatch(workflow, /\bgit (?:commit|push)\b/);
   assert.match(script, /'--no-single-branch'/);
   assert.match(ignore, /^state\/$/m);
-  assert.equal(instructions.trim(), '[AGENTS.md](../AGENTS.md)');
+  assert.match(instructions, /Never add real organization names/);
+  assert.match(instructions, /workflows never commit generated data or replace that baseline/);
+  assert.equal(existsSync(new URL('../.github/copilot-instructions.md', import.meta.url)), false);
 });
