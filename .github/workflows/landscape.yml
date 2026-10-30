@@ -65,7 +65,7 @@ jobs:
           chmod +x scripts/git-askpass.sh
           node scripts/landscape.mjs clone "$RUNNER_TEMP/landscape-heads.json"
       - name: Install exact engine release
-        run: npm install --no-save --ignore-scripts --no-audit --no-fund --prefix "$RUNNER_TEMP/repo-landscape" '@devex-metrics/repo-landscape@0.1.0'
+        run: npm install --no-save --ignore-scripts --no-audit --no-fund --prefix "$RUNNER_TEMP/repo-landscape" '@devex-metrics/repo-landscape@0.1.2'
       - name: Scan repositories
         env:
           GH_TOKEN: ${{ steps.app-token.outputs.token }}

@@ -4,7 +4,7 @@ Create an independent **private** team repository from this public GitHub templa
 
 The engine produces a full landscape of repository size, languages, Git history, ADR and dependency evidence, and AI-guidance freshness; its report is a self-contained HTML dashboard.
 
-The workflow pins the published `@devex-metrics/repo-landscape@0.1.0` package, released through npm trusted publishing (OIDC) with SLSA provenance. Do not substitute an unpinned package or put an npm token in this template. Do not enable imports until your GitHub App has access to every selected repository.
+The workflow pins the published `@devex-metrics/repo-landscape@0.1.2` package, released through npm trusted publishing (OIDC) with SLSA provenance. This release fixes clone-root ambiguity when an owner and repository have the same name, retaining the v1 JSON contract and compatibility with reviewed `0.1.0` initial baselines. Do not substitute an unpinned package or put an npm token in this template. Do not enable imports until your GitHub App has access to every selected repository.
 
 ## Set up a team repository
 

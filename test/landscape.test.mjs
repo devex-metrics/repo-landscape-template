@@ -101,6 +101,7 @@ test('App token scope and clone paths derive only from the reviewed selection', 
   const selection = validateConfig(example);
   assert.equal(actionOutputs(selection, settings), 'owner=example-org\nrepositories=example-api,example-web\npublish_pages=false\n');
   assert.equal(cloneDestination('/tmp/runner', selection.repositories[0]), join('/tmp/runner', 'landscape-repos', 'example-org/example-api'));
+  assert.equal(cloneDestination('/tmp/runner', 'example-org/example-org'), join('/tmp/runner', 'landscape-repos', 'example-org', 'example-org'));
   assert.throws(() => validateConfig({ ...example, repositories: [
     'first-org/same-name', 'second-org/same-name',
   ] }), /one GitHub App installation owner/);
@@ -135,6 +136,15 @@ test('initial baselines require all selected repositories and complete v1 output
   assert.throws(() => validateSnapshot(noGraph, selected), /full v1 landscape/);
 });
 
+test('v1 snapshots from current and historical scanner releases remain valid baselines', () => {
+  const selected = ['example-org/example-org'];
+  for (const version of ['0.1.0', '0.1.2']) {
+    const baseline = snapshot(selected);
+    baseline.scanner_version = version;
+    assert.equal(validateSnapshot(baseline, selected), baseline);
+  }
+});
+
 test('scan HEADs must agree with every full-history clone', () => {
   const selected = ['example-org/example-api', 'example-org/example-web'];
   const heads = new Map([
@@ -157,7 +167,11 @@ test('workflow gates sensitive operations and never automatically commits genera
   assert.match(workflow, /gh api "repos\/\$GITHUB_REPOSITORY".*\.private/);
   assert.match(workflow, /permission-contents: read/);
   assert.match(workflow, /repositories: \$\{\{ steps\.preflight\.outputs\.repositories \}\}/);
-  assert.match(workflow, /@devex-metrics\/repo-landscape@0\.1\.0/);
+  assert.deepEqual([...workflow.matchAll(/'(@devex-metrics\/repo-landscape@[^']+)'/g)].map((match) => match[1]), [
+    '@devex-metrics/repo-landscape@0.1.2',
+  ]);
+  const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
+  assert.match(readme, /`@devex-metrics\/repo-landscape@0\.1\.2`/);
   assert.match(workflow, /--repos-dir "\$RUNNER_TEMP\/landscape-repos"/);
   assert.match(workflow, /--expected-heads "\$RUNNER_TEMP\/landscape-heads\.json"/);
   assert.match(workflow, /actions\/setup-python@[0-9a-f]{40}/);
