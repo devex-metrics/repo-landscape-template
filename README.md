@@ -63,6 +63,49 @@ To stop future deployments, commit `"publish_pages": false` in the private team 
 
 ## Maintain this template
 
+### Richer schema v1 output and release adoption
+
+The wrapper is prepared for the proposed `0.2.0` readiness contract, but the workflow
+**still installs `0.1.2`**. Do not change that exact pin until the new npm release
+and its provenance are confirmed and its full-history scan/report contract is
+reviewed. This compatibility change alone does not generate the new views.
+The conditional field checks follow the engine's
+[schema and synthetic fixtures at `c426c15`](https://github.com/devex-metrics/repo-landscape-cli/tree/c426c159097ec6c29119501a2623dac310b91d07).
+
+When supplied by the engine, readiness includes per-file commit drift, static
+content cues, age/lag ranges, coverage by AI-file kind, repository activity windows,
+configured-team aggregates, and attention reasons. `commits_since` is graph
+distance after the file's last-changing commit; `commits_since_change` counts
+commits in an inclusive timestamp interval through snapshot generation time.
+They are different measurements, not substitutes. The four content cues (scope,
+actions, verification, guardrails) contribute 25 points each; this measures textual
+coverage, not instruction quality, effectiveness, or valid tool configuration.
+Missing historical facts and budget-limited measurements are **unknown, not zero**.
+Content means are null unless every discovered file was scored.
+
+Low-confidence `references` are mentions of other selected repositories with
+path/line/pinned-HEAD evidence. They remain separate from artifact `edges`;
+neither is proof of runtime topology. Team attribution is optional, exact
+local author-email matching, not identity discovery. This template does not
+configure team identities; any sensitive caller configuration belongs only in a
+separately reviewed private team repository.
+
+Historical baseline validation accepts schema v1 snapshots without the new fields,
+including reviewed `0.1.2` baselines, without rewriting or enriching them. Present
+readiness fields are checked, and advertised capabilities must have their claimed
+structures. Fresh-output verification additionally requires full local/pinned-HEAD
+provenance and a scanner version matching the installed package manifest. A fresh
+`0.2.0` full scan must advertise the readiness capabilities and warnings; a
+historical v1 baseline is not required to gain them.
+
+Adopt shared wrapper changes deliberately in private copies: update the validator,
+its tests, and the workflow's `verify` invocation together (it now takes the
+installed engine's `package.json` as a third argument). Preserve each team's
+selection, settings, credentials, immutable initial baseline, archives, schedules,
+retention, and Pages/privacy decisions. After a confirmed release, update only the
+exact engine pin in a separate reviewed change and refresh against the **existing**
+baseline; never re-import merely to fill missing historical readiness facts.
+
 The template is intentionally thin: `scripts/landscape.mjs` checks the selected config, refuses partial or inconsistent scans, and uses GitHub App credentials to verify the full-history clones. The engine provides the versioned scanner/report. Change the exact npm version only in a reviewed PR after validating its command and JSON contract; do not make team-specific edits to this public source. Run the local, package-independent checks with:
 
 ```sh

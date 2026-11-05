@@ -77,7 +77,7 @@ jobs:
           fi
           "$RUNNER_TEMP/repo-landscape/node_modules/.bin/repo-landscape" "${args[@]}"
       - name: Verify every selected repository and cloned HEAD
-        run: node scripts/landscape.mjs verify ./landscape.json "$RUNNER_TEMP/landscape-heads.json"
+        run: node scripts/landscape.mjs verify ./landscape.json "$RUNNER_TEMP/landscape-heads.json" "$RUNNER_TEMP/repo-landscape/node_modules/@devex-metrics/repo-landscape/package.json"
       - name: Generate local report
         run: |
           "$RUNNER_TEMP/repo-landscape/node_modules/.bin/repo-landscape" report --input ./landscape.json --output ./landscape.html

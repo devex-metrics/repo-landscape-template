@@ -10,6 +10,7 @@ import {
   cloneDestination,
   preflight,
   validateConfig,
+  validateFreshSnapshot,
   validateSettings,
   validateSnapshot,
 } from '../scripts/landscape.mjs';
@@ -43,6 +44,58 @@ function snapshot(repositories) {
       consumes: [],
     })),
   };
+}
+
+function readinessSnapshot() {
+  const result = snapshot(['example-org/example-api', 'example-org/example-web']);
+  result.scanner_version = '0.2.0';
+  result.provenance = {
+    source: 'local_git', snapshot: 'pinned_head', analysis: 'full', stale_after_days: 90,
+    capabilities: [
+      'ai_content_cues_v1', 'ai_commit_drift_v1', 'ai_kind_coverage_v1',
+      'activity_windows_v1', 'attention_rules_v1', 'configured_team_aggregate_v1',
+      'repository_references_v1',
+    ],
+  };
+  result.capability_warnings = ['Static cues are not a quality score; null is not zero.'];
+  for (const repo of result.repositories) {
+    repo.ai_files = [{
+      path: 'AGENTS.md', kind: 'agents', sha256: 'a'.repeat(64),
+      last_changed: result.generated_at, age_days: 0, lag_days: 0, stale: false, status: 'known',
+      evidence: { source: 'local_git', head_sha: repo.head_sha, blob_sha: 'a'.repeat(40) },
+      commits_since: 0, commits_since_change: 1,
+      content_signal: { score: 75, scope: true, actions: true, verification: true, guardrails: false },
+    }];
+    repo.ai_summary = {
+      count: 1, stale_count: 0, unknown_count: 0, max_lag_days: 0, status: 'known',
+      min_age_days: 0, max_age_days: 0, min_lag_days: 0,
+      min_commits_since: 0, max_commits_since: 0,
+      history_known_count: 1, commits_since_known_count: 1, commits_since_change_known_count: 1,
+      content_scored_count: 1, content_signal_mean: 75,
+      by_kind: [{ kind: 'agents', count: 1, known_count: 1, stale_count: 0, unknown_count: 0 }],
+    };
+    repo.activity = { complete: true, commits_30d: 1, commits_90d: 1 };
+    repo.team_activity = {
+      available: false, complete: false, matching: 'unavailable',
+      commit_count: null, commits_30d: null, commits_90d: null,
+      unknown_reason: 'No explicit team author emails configured',
+    };
+    repo.attention = { activity: 'low', priority: 'low', reasons: [] };
+  }
+  result.references = [{
+    source: result.repositories[0].full_name, target: result.repositories[1].full_name,
+    kind: 'repository reference', confidence: 'low',
+    evidence: { path: 'README.md', line: 1, head_sha: result.repositories[0].head_sha },
+  }];
+  return result;
+}
+
+function validateFixture(result, fresh = false) {
+  const selected = result.selection.selected_repositories;
+  const heads = new Map(result.repositories.map((repo) => [repo.full_name, repo.head_sha]));
+  return fresh
+    ? validateFreshSnapshot(result, selected, heads, result.scanner_version)
+    : validateSnapshot(result, selected, heads);
 }
 
 test('the public template is inert and its example is synthetic', () => {
@@ -141,7 +194,180 @@ test('v1 snapshots from current and historical scanner releases remain valid bas
   for (const version of ['0.1.0', '0.1.2']) {
     const baseline = snapshot(selected);
     baseline.scanner_version = version;
+    baseline.repositories[0].ai_files = [{
+      path: 'AGENTS.md', kind: 'agents', sha256: 'a'.repeat(64),
+      last_changed: '2025-12-31T00:00:00Z', age_days: 1, lag_days: 0, stale: false, status: 'known',
+      evidence: {
+        source: 'local_git', head_sha: baseline.repositories[0].head_sha,
+        blob_sha: 'a'.repeat(40), last_commit_sha: 'b'.repeat(40),
+      },
+    }];
+    baseline.repositories[0].ai_summary = {
+      count: 1, stale_count: 0, max_lag_days: 0, unknown_count: 0, status: 'known',
+    };
+    const original = JSON.stringify(baseline);
     assert.equal(validateSnapshot(baseline, selected), baseline);
+    assert.equal(JSON.stringify(baseline), original);
+    assert.equal(Object.hasOwn(baseline.repositories[0].ai_summary, 'content_signal_mean'), false);
+    assert.equal(Object.hasOwn(baseline.repositories[0].ai_files[0], 'commits_since_change'), false);
+  }
+});
+
+test('empty richer readiness has null ranges and mean rather than fabricated zeros', () => {
+  const result = readinessSnapshot();
+  for (const repo of result.repositories) {
+    repo.ai_files = [];
+    Object.assign(repo.ai_summary, {
+      count: 0, max_lag_days: null, min_age_days: null, max_age_days: null,
+      min_lag_days: null, min_commits_since: null, max_commits_since: null,
+      history_known_count: 0, commits_since_known_count: 0, commits_since_change_known_count: 0,
+      content_scored_count: 0, content_signal_mean: null, by_kind: [],
+    });
+  }
+  assert.equal(validateFixture(result, true), result);
+  result.repositories[0].ai_summary.max_lag_days = 0;
+  assert.throws(() => validateFixture(result), /measured max_lag_days/);
+});
+
+test('fresh output matches the installed engine and full local provenance, unlike historical baselines', () => {
+  const result = readinessSnapshot();
+  assert.equal(validateFixture(result, true), result);
+  const selected = result.selection.selected_repositories;
+  const heads = new Map(result.repositories.map((repo) => [repo.full_name, repo.head_sha]));
+  assert.throws(() => validateFreshSnapshot(result, selected, heads, '0.1.2'), /version does not match/);
+  assert.throws(() => validateFreshSnapshot(result, selected, undefined, '0.2.0'), /clone HEAD/);
+  for (const [key, value] of [['source', 'github_api'], ['snapshot', 'latest'], ['analysis', 'ai_only'], ['stale_after_days', 0]]) {
+    const invalid = structuredClone(result);
+    invalid.provenance[key] = value;
+    assert.throws(() => validateFreshSnapshot(invalid, selected, heads, '0.2.0'), /full local_git/);
+  }
+  const old = snapshot(selected);
+  old.scanner_version = '0.1.2';
+  old.provenance = { source: 'local_git', snapshot: 'pinned_head', analysis: 'full', stale_after_days: 90 };
+  assert.equal(validateFreshSnapshot(old, selected, heads, '0.1.2'), old);
+  delete result.provenance.capabilities;
+  assert.equal(validateFixture(result), result);
+  assert.throws(() => validateFixture(result, true), /0.2.0 full-analysis capabilities/);
+});
+
+test('richer v1 output keeps graph distance, inclusive timestamp counts and references distinct', () => {
+  const result = readinessSnapshot();
+  assert.equal(validateFixture(result), result);
+  assert.equal(result.repositories[0].ai_files[0].commits_since, 0);
+  assert.equal(result.repositories[0].ai_files[0].commits_since_change, 1);
+  assert.deepEqual(result.edges, []);
+  assert.equal(result.references[0].confidence, 'low');
+});
+
+test('unknown content, activity and team evidence remains null with explicit reasons', () => {
+  const result = readinessSnapshot();
+  const repo = result.repositories[0];
+  repo.ai_files[0].content_signal = null;
+  repo.ai_files[0].content_signal_reason = 'Scoring budget exceeded';
+  repo.ai_files[0].commits_since = null;
+  repo.ai_files[0].commits_since_change = null;
+  Object.assign(repo.ai_summary, {
+    content_scored_count: 0, content_signal_mean: null,
+    commits_since_known_count: 0, commits_since_change_known_count: 0,
+    min_commits_since: null, max_commits_since: null,
+  });
+  repo.activity = { complete: false, commits_30d: null, commits_90d: null, unknown_reason: 'Budget exceeded' };
+  repo.attention = { activity: 'unknown', priority: 'medium', reasons: ['Readiness evidence is incomplete'] };
+  const original = JSON.stringify(result);
+  assert.equal(validateFixture(result, true), result);
+  assert.equal(JSON.stringify(result), original);
+  repo.ai_summary.content_signal_mean = 0;
+  assert.throws(() => validateFixture(result), /mean coverage/);
+});
+
+test('known optional measurements are checked even without capability declarations', () => {
+  const mutations = [
+    (s, r, f) => { f.commits_since = -1; },
+    (s, r, f) => { f.commits_since_change = 1.5; },
+    (s, r, f) => { f.content_signal.score = 100; },
+    (s, r, f) => { f.content_signal.scope = 1; },
+    (s, r, f) => { f.content_signal = null; },
+    (s, r, f) => { f.content_signal_reason = 1; },
+    (s, r) => { r.ai_summary.history_known_count = 2; },
+    (s, r) => { r.ai_summary.min_age_days = 4; },
+    (s, r) => { r.ai_summary.min_commits_since = null; },
+    (s, r) => { r.ai_summary.content_signal_mean = 101; },
+    (s, r) => { r.ai_summary.content_signal_mean = 50; },
+    (s, r) => { r.ai_summary.commits_since_known_count = 0; },
+    (s, r) => { r.ai_summary.content_scored_count = 0; },
+    (s, r) => { r.ai_summary.by_kind[0].known_count = 0; },
+    (s, r) => { r.ai_summary.by_kind.push({ ...r.ai_summary.by_kind[0] }); },
+    (s, r) => { r.ai_summary.by_kind = []; },
+    (s, r) => { r.activity.commits_30d = 2; },
+    (s, r) => { r.activity.complete = false; },
+    (s, r) => { r.activity = null; },
+    (s, r) => { r.team_activity.commit_count = 0; },
+    (s, r) => { r.team_activity.available = true; },
+    (s, r) => { r.team_activity.unknown_reason = ''; },
+    (s, r) => { r.attention.priority = 'urgent'; },
+    (s, r) => { r.attention.reasons = [null]; },
+    (s) => { s.capability_warnings = 'warning'; },
+    (s) => { s.references[0].target = 'example-org/unselected'; },
+    (s) => { s.references[0].target = s.references[0].source; },
+    (s) => { s.references[0].confidence = 'high'; },
+    (s) => { s.references[0].kind = 'artifact dependency'; },
+    (s) => { s.references[0].evidence.head_sha = 'f'.repeat(40); },
+    (s) => { s.references[0].evidence.line = 0; },
+    (s) => { s.references = null; },
+  ];
+  for (const mutate of mutations) {
+    const result = readinessSnapshot();
+    delete result.provenance.capabilities;
+    mutate(result, result.repositories[0], result.repositories[0].ai_files[0]);
+    assert.throws(() => validateFixture(result), /Invalid readiness measurement/, mutate.toString());
+  }
+});
+
+test('comparison file deltas preserve unknowns and allow decreases, not malformed measurements', () => {
+  const result = readinessSnapshot();
+  const delta = {
+    path: 'AGENTS.md', age_days: -1, lag_days: -2, commits_since: -3,
+    commits_since_change: null, content_score: 25,
+  };
+  result.comparison = { repositories: [{ file_deltas: [delta] }] };
+  assert.equal(validateFixture(result), result);
+  delta.commits_since_change = 'unknown';
+  assert.throws(() => validateFixture(result), /nullable signed file deltas/);
+  delete delta.commits_since_change;
+  assert.throws(() => validateFixture(result), /comparison file delta/);
+});
+
+test('capability declarations are unique and must contain their claimed structures', () => {
+  const mutations = [
+    (s) => { s.provenance.capabilities = null; },
+    (s) => { s.provenance.capabilities = ['invented_v1']; },
+    (s) => { s.provenance.capabilities.push(s.provenance.capabilities[0]); },
+    (s, r, f) => { delete f.content_signal; },
+    (s, r, f) => { delete f.commits_since_change; },
+    (s, r) => { delete r.ai_summary.by_kind; },
+    (s, r) => { delete r.activity; },
+    (s, r) => { delete r.team_activity; },
+    (s, r) => { delete r.attention; },
+    (s) => { delete s.references; },
+  ];
+  for (const mutate of mutations) {
+    const result = readinessSnapshot();
+    mutate(result, result.repositories[0], result.repositories[0].ai_files[0]);
+    assert.throws(() => validateFixture(result), /Invalid readiness measurement/, mutate.toString());
+  }
+});
+
+test('configured team aggregates cannot exceed repository totals or windows', () => {
+  const result = readinessSnapshot();
+  const team = result.repositories[0].team_activity = {
+    available: true, complete: true, matching: 'exact_author_email',
+    commit_count: 1, commits_30d: 1, commits_90d: 1,
+  };
+  assert.equal(validateFixture(result), result);
+  for (const key of ['commit_count', 'commits_30d', 'commits_90d']) {
+    team[key] = 2;
+    assert.throws(() => validateFixture(result), /team activity completeness/);
+    team[key] = 1;
   }
 });
 
@@ -174,6 +400,7 @@ test('workflow gates sensitive operations and never automatically commits genera
   assert.match(readme, /`@devex-metrics\/repo-landscape@0\.1\.2`/);
   assert.match(workflow, /--repos-dir "\$RUNNER_TEMP\/landscape-repos"/);
   assert.match(workflow, /--expected-heads "\$RUNNER_TEMP\/landscape-heads\.json"/);
+  assert.match(workflow, /verify \.\/landscape\.json "\$RUNNER_TEMP\/landscape-heads\.json" "\$RUNNER_TEMP\/repo-landscape\/node_modules\/@devex-metrics\/repo-landscape\/package\.json"/);
   assert.match(workflow, /actions\/setup-python@[0-9a-f]{40}/);
   assert.match(workflow, /--baseline \.\/state\/initial-baseline\.json/);
   assert.match(workflow, /publish_pages == 'true' && inputs.mode == 'refresh'/);
