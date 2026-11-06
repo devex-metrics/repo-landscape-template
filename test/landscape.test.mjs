@@ -394,10 +394,12 @@ test('workflow gates sensitive operations and never automatically commits genera
   assert.match(workflow, /permission-contents: read/);
   assert.match(workflow, /repositories: \$\{\{ steps\.preflight\.outputs\.repositories \}\}/);
   assert.deepEqual([...workflow.matchAll(/'(@devex-metrics\/repo-landscape@[^']+)'/g)].map((match) => match[1]), [
-    '@devex-metrics/repo-landscape@0.1.2',
+    '@devex-metrics/repo-landscape@0.2.0',
   ]);
   const readme = readFileSync(new URL('../README.md', import.meta.url), 'utf8');
-  assert.match(readme, /`@devex-metrics\/repo-landscape@0\.1\.2`/);
+  assert.match(readme, /`@devex-metrics\/repo-landscape@0\.2\.0`/);
+  assert.match(readme, /sha512-O7TPUiLq\+BT\/zc9i\/\/MZ0RZSrHZlDpJKQl5tfqr4m2EyI3R\+\+n1TiZ7naWbjHPVBDjZYxa\/URBuTjiiVYeTQcQ==/);
+  assert.match(readme, /landscape-cli\/actions\/runs\/42180051083/);
   assert.match(workflow, /--repos-dir "\$RUNNER_TEMP\/landscape-repos"/);
   assert.match(workflow, /--expected-heads "\$RUNNER_TEMP\/landscape-heads\.json"/);
   assert.match(workflow, /verify \.\/landscape\.json "\$RUNNER_TEMP\/landscape-heads\.json" "\$RUNNER_TEMP\/repo-landscape\/node_modules\/@devex-metrics\/repo-landscape\/package\.json"/);
