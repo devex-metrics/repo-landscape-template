@@ -13,6 +13,202 @@ const root = fileURLToPath(new URL('../', import.meta.url));
 const baselinePath = 'state/initial-baseline.json';
 const shaPattern = /^[0-9a-f]{40}$/;
 const namePattern = /^([a-zA-Z0-9](?:[a-zA-Z0-9-]{0,37}[a-zA-Z0-9])?)\/([a-zA-Z0-9_.-]{1,100})$/;
+const readinessCapabilities = [
+  'ai_content_cues_v1', 'ai_commit_drift_v1', 'ai_kind_coverage_v1',
+  'activity_windows_v1', 'attention_rules_v1', 'configured_team_aggregate_v1',
+  'repository_references_v1',
+];
+const summaryCounts = [
+  'history_known_count', 'commits_since_known_count',
+  'commits_since_change_known_count', 'content_scored_count',
+];
+const summaryRanges = [
+  'min_age_days', 'max_age_days', 'min_lag_days',
+  'min_commits_since', 'max_commits_since',
+];
+
+const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
+const isCount = (value) => Number.isSafeInteger(value) && value >= 0;
+const isNullableCount = (value) => value === null || isCount(value);
+const isText = (value) => typeof value === 'string' && value.trim().length > 0;
+
+function requireMeasurement(condition, context) {
+  if (!condition) fail(`Invalid readiness measurement: ${context}.`);
+}
+
+function requireFields(value, fields, context) {
+  requireMeasurement(isObject(value) && fields.every((key) => Object.hasOwn(value, key)), context);
+}
+
+function validateReadiness(entry, capabilities) {
+  const context = entry.full_name;
+  const claimed = (capability) => capabilities.includes(capability);
+  for (const file of entry.ai_files) {
+    requireMeasurement(isObject(file), `${context} AI file`);
+    if (claimed('ai_commit_drift_v1')) {
+      requireFields(file, ['commits_since', 'commits_since_change'], `${context} commit drift`);
+    }
+    for (const key of ['commits_since', 'commits_since_change']) {
+      if (Object.hasOwn(file, key)) requireMeasurement(isNullableCount(file[key]), `${context} ${key}`);
+    }
+    if (claimed('ai_content_cues_v1')) requireFields(file, ['content_signal'], `${context} content cues`);
+    if (Object.hasOwn(file, 'content_signal_reason')) {
+      requireMeasurement(isText(file.content_signal_reason), `${context} content cue reason`);
+    }
+    if (Object.hasOwn(file, 'content_signal')) {
+      const signal = file.content_signal;
+      if (signal === null) {
+        requireMeasurement(isText(file.content_signal_reason), `${context} unknown content cue reason`);
+      } else {
+        const cues = ['scope', 'actions', 'verification', 'guardrails'];
+        requireFields(signal, ['score', ...cues], `${context} content signal`);
+        requireMeasurement(
+          Object.keys(signal).length === 5 &&
+          cues.every((cue) => typeof signal[cue] === 'boolean') &&
+          signal.score === cues.filter((cue) => signal[cue]).length * 25,
+          `${context} static content cue score`,
+        );
+      }
+    }
+  }
+  const summary = entry.ai_summary;
+  if (claimed('ai_kind_coverage_v1')) {
+    requireFields(summary, [...summaryCounts, ...summaryRanges, 'max_lag_days', 'status', 'content_signal_mean', 'by_kind'], `${context} summary coverage`);
+  }
+  requireMeasurement(
+    summary.count === entry.ai_files.length &&
+    isCount(summary.stale_count) && summary.stale_count <= summary.count &&
+    isCount(summary.unknown_count) && summary.unknown_count <= summary.count,
+    `${context} summary counts`,
+  );
+  const measuredCounts = {
+    history_known_count: entry.ai_files.filter((file) => file.status === 'known').length,
+    commits_since_known_count: entry.ai_files.filter((file) => isCount(file.commits_since)).length,
+    commits_since_change_known_count: entry.ai_files.filter((file) => isCount(file.commits_since_change)).length,
+    content_scored_count: entry.ai_files.filter((file) => isObject(file.content_signal)).length,
+  };
+  for (const key of summaryCounts) {
+    if (Object.hasOwn(summary, key)) {
+      requireMeasurement(isCount(summary[key]) && summary[key] === measuredCounts[key], `${context} measured ${key}`);
+    }
+  }
+  for (const key of [...summaryRanges, 'max_lag_days']) {
+    if (Object.hasOwn(summary, key)) requireMeasurement(isNullableCount(summary[key]), `${context} ${key}`);
+  }
+  for (const [minimum, maximum] of [
+    ['min_age_days', 'max_age_days'], ['min_lag_days', 'max_lag_days'],
+    ['min_commits_since', 'max_commits_since'],
+  ]) {
+    if (Object.hasOwn(summary, minimum) && Object.hasOwn(summary, maximum)) {
+      requireMeasurement(
+        (summary[minimum] === null && summary[maximum] === null) ||
+        (isCount(summary[minimum]) && isCount(summary[maximum]) && summary[minimum] <= summary[maximum]),
+        `${context} ${minimum}/${maximum} range`,
+      );
+    }
+    for (const [key, fileKey, measure] of [
+      ['min_age_days', 'age_days', Math.min], ['max_age_days', 'age_days', Math.max],
+      ['min_lag_days', 'lag_days', Math.min], ['max_lag_days', 'lag_days', Math.max],
+      ['min_commits_since', 'commits_since', Math.min], ['max_commits_since', 'commits_since', Math.max],
+    ]) {
+      if (Object.hasOwn(summary, key)) {
+        const values = entry.ai_files.map((file) => file[fileKey]).filter(isCount);
+        requireMeasurement(
+          summary[key] === (values.length ? values.reduce((value, next) => measure(value, next)) : null),
+          `${context} measured ${key}`,
+        );
+      }
+    }
+  }
+  if (Object.hasOwn(summary, 'content_signal_mean')) {
+    const mean = summary.content_signal_mean;
+    requireMeasurement(
+      mean === null || (typeof mean === 'number' && Number.isFinite(mean) && mean >= 0 && mean <= 100),
+      `${context} content signal mean`,
+    );
+    if (Object.hasOwn(summary, 'content_scored_count')) {
+      requireMeasurement(
+        (summary.count > 0 && summary.content_scored_count === summary.count) === (mean !== null),
+        `${context} content signal mean coverage`,
+      );
+    }
+    if (mean !== null) {
+      requireMeasurement(
+        entry.ai_files.length > 0 && entry.ai_files.every((file) => isObject(file.content_signal)) &&
+        mean === entry.ai_files.reduce((total, file) => total + file.content_signal.score, 0) / entry.ai_files.length,
+        `${context} measured content signal mean`,
+      );
+    }
+  }
+  if (Object.hasOwn(summary, 'by_kind')) {
+    requireMeasurement(Array.isArray(summary.by_kind), `${context} by_kind`);
+    const kinds = new Set();
+    for (const kind of summary.by_kind) {
+      requireFields(kind, ['kind', 'count', 'known_count', 'stale_count', 'unknown_count'], `${context} kind coverage`);
+      requireMeasurement(
+        isText(kind.kind) && !kinds.has(kind.kind) &&
+        ['count', 'known_count', 'stale_count', 'unknown_count'].every((key) => isCount(kind[key])) &&
+        kind.count <= summary.count && kind.known_count + kind.unknown_count === kind.count &&
+        kind.stale_count <= kind.known_count,
+        `${context} kind counts`,
+      );
+      const files = entry.ai_files.filter((file) => file.kind === kind.kind);
+      requireMeasurement(
+        kind.count === files.length &&
+        kind.known_count === files.filter((file) => file.status === 'known').length &&
+        kind.unknown_count === files.filter((file) => file.status === 'unknown').length &&
+        kind.stale_count === files.filter((file) => file.stale === true).length,
+        `${context} measured kind coverage`,
+      );
+      kinds.add(kind.kind);
+    }
+    requireMeasurement(
+      summary.by_kind.reduce((total, kind) => total + kind.count, 0) === summary.count,
+      `${context} kind total`,
+    );
+  }
+  if (claimed('activity_windows_v1')) requireFields(entry, ['activity'], `${context} activity capability`);
+  if (Object.hasOwn(entry, 'activity')) {
+    const activity = entry.activity;
+    requireFields(activity, ['complete', 'commits_30d', 'commits_90d'], `${context} activity`);
+    requireMeasurement(
+      typeof activity.complete === 'boolean' &&
+      (activity.complete
+        ? isCount(activity.commits_30d) && isCount(activity.commits_90d) && activity.commits_30d <= activity.commits_90d
+        : activity.commits_30d === null && activity.commits_90d === null && isText(activity.unknown_reason)),
+      `${context} activity completeness`,
+    );
+  }
+  if (claimed('configured_team_aggregate_v1')) requireFields(entry, ['team_activity'], `${context} team capability`);
+  if (Object.hasOwn(entry, 'team_activity')) {
+    const team = entry.team_activity;
+    requireFields(team, ['available', 'complete', 'matching', 'commit_count', 'commits_30d', 'commits_90d'], `${context} team activity`);
+    requireMeasurement(
+      typeof team.available === 'boolean' &&
+      (team.available
+        ? team.complete === true && team.matching === 'exact_author_email' &&
+          [team.commit_count, team.commits_30d, team.commits_90d].every(isCount) &&
+          team.commits_30d <= team.commits_90d && team.commits_90d <= team.commit_count &&
+          team.commit_count <= entry.git.commit_count &&
+          (!entry.activity?.complete ||
+            (team.commits_30d <= entry.activity.commits_30d && team.commits_90d <= entry.activity.commits_90d))
+        : team.complete === false && team.matching === 'unavailable' &&
+          team.commit_count === null && team.commits_30d === null && team.commits_90d === null &&
+          isText(team.unknown_reason)),
+      `${context} team activity completeness`,
+    );
+  }
+  if (claimed('attention_rules_v1')) requireFields(entry, ['attention'], `${context} attention capability`);
+  if (Object.hasOwn(entry, 'attention')) {
+    const attention = entry.attention;
+    requireFields(attention, ['activity', 'priority', 'reasons'], `${context} attention`);
+    requireMeasurement(
+      ['activity', 'priority'].every((key) => ['high', 'medium', 'low', 'unknown'].includes(attention[key])) &&
+      Array.isArray(attention.reasons) && attention.reasons.every(isText),
+      `${context} attention reasons`,
+    );
+  }
+}
 
 function fail(message) {
   throw new Error(message);
@@ -82,7 +278,7 @@ export function validateSnapshot(snapshot, selected, expectedHeads) {
     typeof snapshot.scanner_version !== 'string' ||
     !snapshot.scanner_version ||
     !snapshot.provenance ||
-    typeof snapshot.provenance !== 'object'
+    !isObject(snapshot.provenance)
   ) {
     fail('Scanner output is missing v1 generation or provenance metadata.');
   }
@@ -97,6 +293,19 @@ export function validateSnapshot(snapshot, selected, expectedHeads) {
     selectedNames.some((name) => !expected.has(name.toLowerCase()))
   ) {
     fail('Scanner selection does not match the approved explicit repository list.');
+  }
+  const capabilities = snapshot.provenance.capabilities ?? [];
+  requireMeasurement(
+    Array.isArray(capabilities) && capabilities.every((capability) => readinessCapabilities.includes(capability)) &&
+    new Set(capabilities).size === capabilities.length &&
+    (!Object.hasOwn(snapshot.provenance, 'capabilities') || snapshot.provenance.capabilities !== null),
+    'provenance capabilities',
+  );
+  if (Object.hasOwn(snapshot, 'capability_warnings')) {
+    requireMeasurement(
+      Array.isArray(snapshot.capability_warnings) && snapshot.capability_warnings.every(isText),
+      'capability warnings',
+    );
   }
   const observed = new Set();
   for (const entry of snapshot.repositories) {
@@ -133,10 +342,72 @@ export function validateSnapshot(snapshot, selected, expectedHeads) {
     if (expectedHeads && clonedHead?.toLowerCase() !== entry.head_sha.toLowerCase()) {
       fail(`HEAD changed or differs from full-history clone for ${name}; retry the run.`);
     }
+    validateReadiness(entry, capabilities);
     observed.add(name.toLowerCase());
   }
   if (observed.size !== expected.size) {
     fail(`Scanner output resolved ${observed.size} of ${expected.size} selected repositories; baseline not created.`);
+  }
+  if (capabilities.includes('repository_references_v1')) {
+    requireFields(snapshot, ['references'], 'repository references capability');
+  }
+  if (Object.hasOwn(snapshot, 'references')) {
+    requireMeasurement(Array.isArray(snapshot.references), 'repository references');
+    const repos = new Map(snapshot.repositories.map((repo) => [repo.full_name.toLowerCase(), repo]));
+    for (const reference of snapshot.references) {
+      requireFields(reference, ['source', 'target', 'kind', 'confidence', 'evidence'], 'repository reference');
+      const source = typeof reference.source === 'string' && repos.get(reference.source.toLowerCase());
+      const target = typeof reference.target === 'string' && repos.get(reference.target.toLowerCase());
+      requireFields(reference.evidence, ['path', 'line', 'head_sha'], 'repository reference evidence');
+      requireMeasurement(
+        source && target && source !== target &&
+        reference.kind === 'repository reference' && reference.confidence === 'low' &&
+        isText(reference.evidence.path) && isCount(reference.evidence.line) && reference.evidence.line > 0 &&
+        reference.evidence.head_sha === source.head_sha,
+        'selected repository reference and pinned HEAD',
+      );
+    }
+  }
+  if (Object.hasOwn(snapshot, 'comparison')) {
+    requireFields(snapshot.comparison, ['repositories'], 'comparison repositories');
+    requireMeasurement(Array.isArray(snapshot.comparison.repositories), 'comparison repositories');
+  }
+  for (const comparison of snapshot.comparison?.repositories ?? []) {
+    requireMeasurement(isObject(comparison), 'comparison repository');
+    if (Object.hasOwn(comparison, 'file_deltas')) {
+      requireMeasurement(Array.isArray(comparison.file_deltas), 'comparison file deltas');
+      for (const delta of comparison.file_deltas) {
+        const fields = ['age_days', 'lag_days', 'commits_since', 'commits_since_change', 'content_score'];
+        requireFields(delta, ['path', ...fields], 'comparison file delta');
+        requireMeasurement(
+          isText(delta.path) && fields.every((key) => delta[key] === null || Number.isSafeInteger(delta[key])),
+          'comparison nullable signed file deltas',
+        );
+      }
+    }
+  }
+  return snapshot;
+}
+
+export function validateFreshSnapshot(snapshot, selected, expectedHeads, expectedVersion) {
+  if (!(expectedHeads instanceof Map)) fail('Fresh scanner output requires the full-history clone HEAD manifest.');
+  validateSnapshot(snapshot, selected, expectedHeads);
+  if (!isText(expectedVersion) || snapshot.scanner_version !== expectedVersion) {
+    fail('Fresh scanner output version does not match the installed exact engine release.');
+  }
+  const provenance = snapshot.provenance;
+  if (
+    provenance.source !== 'local_git' || provenance.snapshot !== 'pinned_head' ||
+    provenance.analysis !== 'full' || !isCount(provenance.stale_after_days) || provenance.stale_after_days < 1
+  ) {
+    fail('Fresh scanner output must have full local_git pinned_head provenance.');
+  }
+  if (expectedVersion === '0.2.0') {
+    requireMeasurement(
+      readinessCapabilities.every((capability) => provenance.capabilities?.includes(capability)) &&
+      Array.isArray(snapshot.capability_warnings),
+      '0.2.0 full-analysis capabilities and warnings',
+    );
   }
   return snapshot;
 }
@@ -206,7 +477,7 @@ function cloneSelected(manifestPath) {
   writeFileSync(manifestPath, `${JSON.stringify(Object.fromEntries(entries.map((entry) => [entry.full_name, entry.head_sha])), null, 2)}\n`, { flag: 'wx' });
 }
 
-function verifySnapshot(snapshotPath, manifestPath) {
+function verifySnapshot(snapshotPath, manifestPath, packagePath) {
   const { selection } = loadSelection();
   const manifest = readJson(manifestPath);
   if (!manifest || Array.isArray(manifest) || typeof manifest !== 'object' || Object.keys(manifest).length !== selection.repositories.length) {
@@ -216,15 +487,17 @@ function verifySnapshot(snapshotPath, manifestPath) {
   if (heads.size !== selection.repositories.length || selection.repositories.some((name) => !shaPattern.test(heads.get(name.toLowerCase()) ?? ''))) {
     fail('Clone manifest contains missing or duplicate repositories.');
   }
-  validateSnapshot(readJson(snapshotPath), selection.repositories, heads);
+  const engine = readJson(packagePath);
+  if (engine?.name !== '@devex-metrics/repo-landscape') fail('Expected the installed repo-landscape package manifest.');
+  validateFreshSnapshot(readJson(snapshotPath), selection.repositories, heads, engine.version);
 }
 
 function main() {
   const [command, ...args] = process.argv.slice(2);
   if (command === 'preflight' && args.length === 2) preflight(args[0], args[1]);
   else if (command === 'clone' && args.length === 1) cloneSelected(resolve(args[0]));
-  else if (command === 'verify' && args.length === 2) verifySnapshot(resolve(args[0]), resolve(args[1]));
-  else fail('Usage: node scripts/landscape.mjs preflight <import|refresh> <github-output> | clone <manifest> | verify <snapshot> <manifest>');
+  else if (command === 'verify' && args.length === 3) verifySnapshot(resolve(args[0]), resolve(args[1]), resolve(args[2]));
+  else fail('Usage: node scripts/landscape.mjs preflight <import|refresh> <github-output> | clone <manifest> | verify <snapshot> <manifest> <installed-package-json>');
 }
 
 if (process.argv[1] && resolve(process.argv[1]) === fileURLToPath(import.meta.url)) {

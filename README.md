@@ -4,7 +4,7 @@ Create an independent **private** team repository from this public GitHub templa
 
 The engine produces a full landscape of repository size, languages, Git history, ADR and dependency evidence, and AI-guidance freshness; its report is a self-contained HTML dashboard.
 
-The workflow pins the published `@devex-metrics/repo-landscape@0.1.2` package, released through npm trusted publishing (OIDC) with SLSA provenance. This release fixes clone-root ambiguity when an owner and repository have the same name, retaining the v1 JSON contract and compatibility with reviewed `0.1.0` initial baselines. Do not substitute an unpinned package or put an npm token in this template. Do not enable imports until your GitHub App has access to every selected repository.
+The workflow pins the published `@devex-metrics/repo-landscape@0.2.0` package, released through npm trusted publishing (OIDC) with SLSA provenance. This release adds richer AI-readiness and repository-activity evidence while retaining the v1 JSON contract and compatibility with reviewed `0.1.0` initial baselines. Do not substitute an unpinned package or put an npm token in this template. Do not enable imports until your GitHub App has access to every selected repository.
 
 ## Set up a team repository
 
@@ -62,6 +62,52 @@ Setting the Pages source to **GitHub Actions** alone does not prevent a skipped 
 To stop future deployments, commit `"publish_pages": false` in the private team repository. This skips publication on subsequent runs; it does **not** remove an already deployed site. Review or unpublish that site separately in **Settings → Pages** if access must be withdrawn.
 
 ## Maintain this template
+
+### Richer schema v1 output and release adoption
+
+The workflow installs the exact `0.2.0` release. Its source is signed commit
+[`9b55b7c`](https://github.com/devex-metrics/repo-landscape-cli/commit/9b55b7c329f46f3ed4adc1c09e93da9786645cec),
+tagged `v0.2.0`; [npm publish run 42180051083](https://github.com/devex-metrics/repo-landscape-cli/actions/runs/42180051083)
+completed successfully with SLSA provenance. The published tarball integrity is
+`sha512-O7TPUiLq+BT/zc9i//MZ0RZSrHZlDpJKQl5tfqr4m2EyI3R++n1TiZ7naWbjHPVBDjZYxa/URBuTjiiVYeTQcQ==`.
+The conditional field checks follow the engine's
+[schema and synthetic fixtures at `c426c15`](https://github.com/devex-metrics/repo-landscape-cli/tree/c426c159097ec6c29119501a2623dac310b91d07).
+
+When supplied by the engine, readiness includes per-file commit drift, static
+content cues, age/lag ranges, coverage by AI-file kind, repository activity windows,
+configured-team aggregates, and attention reasons. `commits_since` is graph
+distance after the file's last-changing commit; `commits_since_change` counts
+commits in an inclusive timestamp interval through snapshot generation time.
+They are different measurements, not substitutes. The four content cues (scope,
+actions, verification, guardrails) contribute 25 points each; this measures textual
+coverage, not instruction quality, effectiveness, or valid tool configuration.
+Missing historical facts and budget-limited measurements are **unknown, not zero**.
+Content means are null unless every discovered file was scored.
+
+Low-confidence `references` are mentions of other selected repositories with
+path/line/pinned-HEAD evidence. They remain separate from artifact `edges`;
+neither is proof of runtime topology. Team attribution is optional, exact
+local author-email matching, not identity discovery. This template does not
+configure team identities; any sensitive caller configuration belongs only in a
+separately reviewed private team repository.
+
+Historical baseline validation accepts schema v1 snapshots without the new fields,
+including reviewed `0.1.0` and `0.1.2` baselines, without rewriting or enriching
+them; the published `0.2.0` engine's baseline validator was checked against the
+synthetic historical `0.1.0` fixture. Present readiness fields are checked, and
+advertised capabilities must have their claimed structures. Fresh-output
+verification additionally requires full local/pinned-HEAD provenance and a scanner
+version matching the installed package manifest. A fresh `0.2.0` full scan must
+advertise the readiness capabilities and warnings; an existing baseline is not
+required to gain them.
+
+Adopt shared wrapper changes deliberately in private copies: update the validator,
+its tests, and the workflow's `verify` invocation together (it now takes the
+installed engine's `package.json` as a third argument). Preserve each team's
+selection, settings, credentials, immutable initial baseline, archives, schedules,
+retention, and Pages/privacy decisions. Pin exact version `0.2.0` only after
+reviewing the matching release and use the existing baseline for refresh; never
+re-import merely to fill missing historical readiness facts.
 
 The template is intentionally thin: `scripts/landscape.mjs` checks the selected config, refuses partial or inconsistent scans, and uses GitHub App credentials to verify the full-history clones. The engine provides the versioned scanner/report. Change the exact npm version only in a reviewed PR after validating its command and JSON contract; do not make team-specific edits to this public source. Run the local, package-independent checks with:
 
